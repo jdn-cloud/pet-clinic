@@ -1,85 +1,233 @@
-trigger:
+This weeks will be terraform in ADO
+Denis
+We will create the same architecture done last week 
+Denis
+Using a pipeline I'm going to add a manual approval to the pipeline
+Denis
+That's the only other change that will be made # Terraform Remote Backend – Production Setup Guide
+
+This document describes the **production-grade setup** for a Terraform remote backend using **Azure Storage**, integrated with **Azure DevOps Pipelines** via a secure **Service Connection**.
+
+The goal is to:
+
+* Create a secure, globally unique Terraform state backend
+* Follow least-privilege RBAC principles
+* Enable reliable, repeatable CI/CD deployments
+
+---
+
+## Architecture Overview
+
+Terraform state is stored remotely in an **Azure Storage Account (Blob Container)**.
+Azure DevOps pipelines authenticate using a **Service Principal–based Service Connection** with scoped RBAC permissions.
+
+```
+Azure DevOps Pipeline
+        │
+        ▼
+Azure Service Connection (Service Principal)
+        │
+        ▼
+Azure Subscription / Resource Group
+        │
+        ▼
+Storage Account (Blob Container: terraform-state)
+```
+
+---
+
+## Prerequisites
+
+* Azure Subscription (Owner or User Access Administrator permissions)
+* Azure CLI (`az`) installed and authenticated
+* Azure DevOps Project with permissions to create:
+
+  * Service Connections
+  * Pipelines
+  * Repositories
+
+---
+
+## Step 1: Create Terraform Backend Resources
+
+The following ARM template creates:
+
+* A dedicated **Resource Group**
+* A **Storage Account** (globally unique)
+* A **private Blob Container** for Terraform state
+
+### Deployment Notes
+
+* Storage account name is generated using `uniqueString()` to ensure global uniqueness
+* Public access is disabled
+* Suitable for production Terraform backends
+
+### Deploy the Template
+
+Deploy at **subscription scope**:
+
+```bash
+az deployment sub create \
+  --name terraform-backend \
+  --location westus3 \
+  --template-file backend.json
+```
+
+Capture the outputs:
+
+* `resourceGroupName`
+* `storageAccountName`
+* `containerName`
+
+These values are required later for the pipeline.
+
+---
+
+## Step 2: Create Azure DevOps Service Connection (Improved & Secure)
+
+### Recommended Authentication Method
+
+✅ **Azure Resource Manager – Service Principal (Automatic)**
+This ensures:
+
+* Credential rotation handled by Azure
+* No secrets committed to source control
+* Simplified management
+
+### Step-by-Step
+
+1. Navigate to **Azure DevOps**
+2. Go to **Project Settings → Service Connections**
+3. Select **New Service Connection**
+4. Choose **Azure Resource Manager**
+5. Select **Service Principal (automatic)**
+6. Scope Level:
+
+   * **Subscription** (recommended for shared Terraform backends)
+7. Select the target subscription
+8. Check **Grant access permission to all pipelines** (or restrict explicitly)
+9. Name the connection clearly:
+
+```
+azurerm-terraform-backend
+```
+
+10. Create the service connection
+
+---
+
+## Step 3: Assign RBAC Permissions (Least Privilege)
+
+Retrieve the **Service Principal Object ID**:
+
+```bash
+az ad sp list --display-name "<service-connection-name>" --query "[0].id" -o tsv
+```
+
+> Replace `<service-connection-name>` with the actual name created by Azure DevOps.
+
+---
+
+### 3.1 Contributor – Resource Group Scope
+
+Allows Terraform to create and manage infrastructure within the backend resource group.
+
+```bash
+az role assignment create \
+  --assignee <SP_OBJECT_ID> \
+  --role "Contributor" \
+  --scope "/subscriptions/<SUB_ID>/resourceGroups/rg-tfstate"
+```
+
+---
+
+### 3.2 Storage Blob Data Contributor – Storage Account Scope
+
+Required for **read/write access** to the Terraform state file.
+
+```bash
+az role assignment create \
+  --assignee <SP_OBJECT_ID> \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<SUB_ID>/resourceGroups/rg-tfstate/providers/Microsoft.Storage/storageAccounts/<STORAGE_ACCOUNT_NAME>"
+```
+
+---
+
+### 3.3 (Optional) Contributor – Subscription Scope
+
+Only required if Terraform manages **multiple resource groups** or subscription-level resources.
+
+```bash
+az role assignment create \
+  --assignee <SP_OBJECT_ID> \
+  --role "Contributor" \
+  --scope "/subscriptions/<SUB_ID>"
+```
+
+> ⚠️ Avoid this unless absolutely necessary.
+
+---
+
+## Step 4: Create the Repository
+
+1. Create a new Azure DevOps Git repository
+2. Add the provided files:
+
+   * Terraform configuration
+   * Backend configuration
+   * Pipeline YAML
+3. Commit and push to `main`
+
+---
+
+## Step 5: Create the Azure DevOps Pipeline
+
+1. Navigate to **Pipelines → New Pipeline**
+2. Select **Azure Repos Git**
+3. Choose the repository
+4. Select **Existing Azure Pipelines YAML file**
+5. Point to the pipeline YAML
+
+---
+
+## Step 6: Configure Pipeline Variables
+
+Define the following variables in the pipeline (Library or Pipeline UI):
+
+```text
+azureServiceConnection = azurerm-terraform-backend
+resourceGroup           = rg-tfstate
+storageAccount          = <storage-account-name>
+container               = terraform-state
+tfStateKey              = terraform.tfstate
+```
+
+Mark sensitive values as **secret** where applicable.
+
+---
+
+## Step 7: Execute and Validate
+
+Run the pipeline and verify:
+
+* Backend initialization succeeds
+* State file is created in Blob Storage
+* Subsequent runs reuse the same state
+
+--- trigger:
 - main
 
-variables:
-  azureServiceConnection: 'azurerm-terraform-backend'
-  resourceGroup: 'rg-tfstate'
-  storageAccount: 'tfstate7a4c4iw4gbetk'
-  container: 'terraform-state'
-  tfStateKey: 'petclinic.tfstate'
+pool:
+  name: 'Default' # Uses your local self-hosted agent
 
 stages:
-
-# =========================
-# STAGE 1: TERRAFORM PLAN
-# =========================
-- stage: Plan
-  displayName: 'Terraform Plan'
-  jobs:
-  - job: Plan
-    displayName: 'Terraform Plan Job'
-    pool:
-      vmImage: 'ubuntu-latest'
-    steps:
-    - checkout: self
-
-    - task: TerraformInstaller@0
-      displayName: 'Install Terraform'
-      inputs:
-        terraformVersion: 'latest'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Init'
-      inputs:
-        provider: 'azurerm'
-        command: 'init'
-        backendServiceArm: '$(azureServiceConnection)'
-        backendAzureRmResourceGroupName: '$(resourceGroup)'
-        backendAzureRmStorageAccountName: '$(storageAccount)'
-        backendAzureRmContainerName: '$(container)'
-        backendAzureRmKey: '$(tfStateKey)'
-
-    - task: TerraformTaskV4@4
-      displayName: 'Terraform Plan'
-      inputs:
-        provider: 'azurerm'
-        command: 'plan'
-        commandOptions: '-out=main.tfplan'
-        environmentServiceNameAzureRM: '$(azureServiceConnection)'
-
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish Terraform Plan'
-      inputs:
-        targetPath: '$(System.DefaultWorkingDirectory)'
-        artifact: 'terraform-plan'
-        publishLocation: 'pipeline'
-
-# =========================
-# STAGE 2: TERRAFORM APPLY
-# =========================
-- stage: Deploy
-  displayName: 'Terraform Apply'
-  dependsOn: Plan
-  condition: succeeded()
-  jobs:
-  - deployment: Deploy
-    displayName: 'Deploy to Production'
-    environment: 'production'   #Manual approval happens here
-    pool:
-      vmImage: 'ubuntu-latest'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - checkout: none
-
-          - task: DownloadPipelineArtifact@2
-            displayName: 'Download Terraform Plan'
-            inputs:
-              buildType: 'current'
-              artifactName: 'terraform-plan'
-              targetPath: '$(System.DefaultWorkingDirectory)'
-
+  # STAGE 1: PLAN (Generates the preview)
+  - stage: Plan
+    displayName: 'Terraform Plan'
+    jobs:
+      - job: PlanJob
+        steps:
           - task: TerraformInstaller@0
             displayName: 'Install Terraform'
             inputs:
@@ -97,9 +245,394 @@ stages:
               backendAzureRmKey: '$(tfStateKey)'
 
           - task: TerraformTaskV4@4
-            displayName: 'Terraform Apply'
+            displayName: 'Terraform Plan'
             inputs:
               provider: 'azurerm'
-              command: 'apply'
-              commandOptions: 'main.tfplan'
+              command: 'plan'
+              commandOptions: '-out=main.tfplan'
               environmentServiceNameAzureRM: '$(azureServiceConnection)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Plan Artifact'
+            inputs:
+              targetPath: '$(System.DefaultWorkingDirectory)'
+              artifact: 'terraform-plan'
+              publishLocation: 'pipeline'
+
+  # STAGE 2: DEPLOY (Requires Manual Approval)
+  - stage: Deploy
+    displayName: 'Terraform Apply'
+    dependsOn: Plan
+    condition: succeeded()
+    jobs:
+      - deployment: DeployJob
+        displayName: 'Deploy to Production'
+        environment: 'production' # <--- This links to the approval rule
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: none # Skip checking out git, we use the artifact
+
+                - task: DownloadPipelineArtifact@2
+                  displayName: 'Download Plan Artifact'
+                  inputs:
+                    buildType: 'current'
+                    artifactName: 'terraform-plan'
+                    targetPath: '$(System.DefaultWorkingDirectory)'
+                
+                - script: |
+                    echo "Restoring provider permissions..."
+                    chmod -R +x .terraform/providers
+                  displayName: 'Fix Provider Permissions'
+                  workingDirectory: '$(System.DefaultWorkingDirectory)'
+                  
+                - task: TerraformInstaller@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: 'latest'
+
+                # We must Init again to download providers on the new agent
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Init'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    backendServiceArm: '$(azureServiceConnection)'
+                    backendAzureRmResourceGroupName: '$(resourceGroup)'
+                    backendAzureRmStorageAccountName: '$(storageAccount)'
+                    backendAzureRmContainerName: '$(container)'
+                    backendAzureRmKey: '$(tfStateKey)'
+
+                - task: TerraformTaskV4@4
+                  displayName: 'Terraform Apply'
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    commandOptions: 'main.tfplan' # Applies the exact plan from Stage 1
+                    environmentServiceNameAzureRM: '$(azureServiceConnection)' resource "azurerm_resource_group" "rg" {
+  name     = var.resource_group_name
+  location = var.location
+}
+
+# Emulate the uniqueString suffix from ARM
+resource "random_string" "suffix" {
+  length  = 6
+  special = false
+  upper   = false
+}
+
+locals {
+  suffix = random_string.suffix.result
+}
+
+# --- Networking ---
+resource "azurerm_virtual_network" "vnet" {
+  name                = var.vnet_name
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  address_space       = ["10.0.0.0/16"]
+}
+
+resource "azurerm_subnet" "app_subnet" {
+  name                 = "AppSubnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+resource "azurerm_subnet" "db_subnet" {
+  name                 = "DbSubnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.0.2.0/24"]
+  
+  delegation {
+    name = "psql-delegation"
+    service_delegation {
+      name = "Microsoft.DBforPostgreSQL/flexibleServers"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
+}
+
+resource "azurerm_subnet" "apim_subnet" {
+  name                 = "ApimSubnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.0.3.0/24"]
+}
+
+# --- Network Security Group (NSG) ---
+resource "azurerm_network_security_group" "apim_nsg" {
+  name                = "apim-nsg"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  security_rule {
+    name                       = "AllowApimManagement"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "3443"
+    source_address_prefix      = "ApiManagement"
+    destination_address_prefix = "VirtualNetwork"
+  }
+
+  security_rule {
+    name                       = "AllowHttps"
+    priority                   = 110
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "Internet"
+    destination_address_prefix = "VirtualNetwork"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "apim_nsg_assoc" {
+  subnet_id                 = azurerm_subnet.apim_subnet.id
+  network_security_group_id = azurerm_network_security_group.apim_nsg.id
+}
+
+# --- NAT Gateway ---
+resource "azurerm_public_ip" "nat_pip" {
+  name                = "nat-ip-${local.suffix}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+}
+
+resource "azurerm_nat_gateway" "nat_gw" {
+  name                = "nat-${local.suffix}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku_name            = "Standard"
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "nat_pip_assoc" {
+  nat_gateway_id       = azurerm_nat_gateway.nat_gw.id
+  public_ip_address_id = azurerm_public_ip.nat_pip.id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "app_subnet_nat_assoc" {
+  subnet_id      = azurerm_subnet.app_subnet.id
+  nat_gateway_id = azurerm_nat_gateway.nat_gw.id
+}
+
+# --- Database (PostgreSQL Flexible) ---
+resource "azurerm_private_dns_zone" "dns_zone" {
+  name                = "${local.suffix}.postgres.database.azure.com"
+  resource_group_name = azurerm_resource_group.rg.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "dns_link" {
+  name                  = "vnet-link"
+  private_dns_zone_name = azurerm_private_dns_zone.dns_zone.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+  resource_group_name   = azurerm_resource_group.rg.name
+}
+
+resource "azurerm_postgresql_flexible_server" "db_server" {
+  name                   = "db-${local.suffix}"
+  resource_group_name    = azurerm_resource_group.rg.name
+  location               = azurerm_resource_group.rg.location
+  version                = "14"
+  delegated_subnet_id    = azurerm_subnet.db_subnet.id
+  private_dns_zone_id    = azurerm_private_dns_zone.dns_zone.id
+  administrator_login    = "petadmin"
+  administrator_password = var.admin_password
+  storage_mb             = 32768
+  sku_name               = "B_Standard_B1ms" # Burstable B1ms
+  public_network_access_enabled = false
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.dns_link]
+}
+
+resource "azurerm_postgresql_flexible_server_database" "petclinic_db" {
+  name      = "petclinic"
+  server_id = azurerm_postgresql_flexible_server.db_server.id
+  charset   = "UTF8"
+  collation = "en_US.utf8"
+}
+
+# --- Load Balancer (Internal) ---
+resource "azurerm_lb" "lb" {
+  name                = "lb-${local.suffix}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "Standard"
+
+  frontend_ip_configuration {
+    name                          = "fe"
+    subnet_id                     = azurerm_subnet.app_subnet.id
+    private_ip_address_allocation = "Static"
+    private_ip_address            = "10.0.1.100"
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "bepool" {
+  loadbalancer_id = azurerm_lb.lb.id
+  name            = "pool1"
+}
+
+resource "azurerm_lb_probe" "http_probe" {
+  loadbalancer_id = azurerm_lb.lb.id
+  name            = "httpProbe"
+  port            = 9966
+  protocol        = "Tcp"
+  interval_in_seconds = 5
+  number_of_probes    = 2
+}
+
+resource "azurerm_lb_rule" "http_rule" {
+  loadbalancer_id                = azurerm_lb.lb.id
+  name                           = "HTTP"
+  protocol                       = "Tcp"
+  frontend_port                  = 80
+  backend_port                   = 9966
+  frontend_ip_configuration_name = "fe"
+  backend_address_pool_ids       = [azurerm_lb_backend_address_pool.bepool.id]
+  probe_id                       = azurerm_lb_probe.http_probe.id
+  enable_floating_ip             = false
+}
+
+# --- VM Scale Set ---
+resource "azurerm_linux_virtual_machine_scale_set" "vmss" {
+  name                = "vmss-${local.suffix}"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  sku                 = "Standard_D2s_v3"
+  instances           = 1
+  admin_username      = "azureuser"
+  admin_password      = var.admin_password
+  disable_password_authentication = false
+
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-jammy"
+    sku       = "22_04-lts"
+    version   = "latest"
+  }
+
+  os_disk {
+    storage_account_type = "Premium_LRS"
+    caching              = "ReadWrite"
+  }
+
+  network_interface {
+    name    = "nic"
+    primary = true
+
+    ip_configuration {
+      name      = "ipconfig"
+      primary   = true
+      subnet_id = azurerm_subnet.app_subnet.id
+      load_balancer_backend_address_pool_ids = [azurerm_lb_backend_address_pool.bepool.id]
+    }
+  }
+
+  # Ensure DB and LB are ready before VMSS comes up
+  depends_on = [
+    azurerm_postgresql_flexible_server_database.petclinic_db,
+    azurerm_lb_rule.http_rule
+  ]
+}
+
+resource "azurerm_virtual_machine_scale_set_extension" "custom_script" {
+  name                         = "installPetClinicRest"
+  virtual_machine_scale_set_id = azurerm_linux_virtual_machine_scale_set.vmss.id
+  publisher                    = "Microsoft.Azure.Extensions"
+  type                         = "CustomScript"
+  type_handler_version         = "2.1"
+
+  # Constructing the command with variables for DB Connection
+  settings = jsonencode({
+    "commandToExecute" = "apt-get update && apt-get install -y docker.io && docker run -d --restart always -p 9966:9966 -e SPRING_PROFILES_ACTIVE=postgres,spring-data-jpa -e SPRING_DATASOURCE_URL=jdbc:postgresql://${azurerm_postgresql_flexible_server.db_server.name}.postgres.database.azure.com:5432/petclinic -e SPRING_DATASOURCE_USERNAME=petadmin -e SPRING_DATASOURCE_PASSWORD=${var.admin_password} springcommunity/spring-petclinic-rest"
+  })
+}
+
+# --- API Management ---
+resource "azurerm_api_management" "apim" {
+  name                = "apim-${local.suffix}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  publisher_name      = "PetClinic"
+  publisher_email     = "admin@contoso.com"
+  sku_name            = "Developer_1"
+  virtual_network_type = "External"
+
+  virtual_network_configuration {
+    subnet_id = azurerm_subnet.apim_subnet.id
+  }
+  depends_on = [
+    azurerm_subnet_network_security_group_association.apim_nsg_assoc
+  ]
+}
+
+resource "azurerm_api_management_api" "petclinic_api" {
+  name                = "petclinic-rest"
+  resource_group_name = azurerm_resource_group.rg.name
+  api_management_name = azurerm_api_management.apim.name
+  revision            = "1"
+  display_name        = "Spring PetClinic REST"
+  path                = "" # As per JSON
+  protocols           = ["https"]
+  service_url         = "http://10.0.1.100/petclinic/api"
+
+  import {
+    content_format = "openapi-link"
+    content_value  = "https://raw.githubusercontent.com/spring-petclinic/spring-petclinic-rest/master/src/main/resources/openapi.yml"
+  }
+} terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
+  }
+
+  # UNCOMMENT and configure this block for your Azure Pipeline
+   backend "azurerm" {
+     resource_group_name  = "rg-tfstate"
+     storage_account_name = "tfstateaccountpetclinic"
+     container_name       = "tfstate"
+     key                  = "petclinic.tfstate"
+   }
+}
+
+provider "azurerm" {
+  features {}
+  # Add this line to stop Terraform from trying to register providers
+  skip_provider_registration = true
+} variable "resource_group_name" {
+  description = "Name of the resource group."
+  type        = string
+  default     = "petclinic-rg"
+}
+
+variable "location" {
+  description = "Azure region for resources."
+  type        = string
+  default     = "westus3"
+}
+
+variable "vnet_name" {
+  description = "Name of the Virtual Network."
+  type        = string
+  default     = "petclinic-vnet"
+}
+
+variable "admin_password" {
+  description = "Administrator password for VMSS and Database."
+  type        = string
+  default     = "PetClinic!2026!Azure"
+}
