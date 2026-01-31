@@ -9,6 +9,8 @@ variable "location" {
 }
 
 variable "admin_password" {
-  type      = string
-  sensitive = true
+  description = "Administrator password"
+  type        = string
+  sensitive   = true
 }
+
