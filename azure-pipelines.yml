@@ -4,18 +4,15 @@ trigger:
 variables:
 - name: azureServiceConnection
   value: azurerm-terraform-backend
-
 - name: resourceGroup
   value: rg-tfstate
-
 - name: storageAccount
   value: tfstate7a4c4iw4gbetk
-
 - name: container
   value: terraform-state
-
 - name: tfStateKey
   value: petclinic.tfstate
+- group: terraform-prod-vars    
 
 # =========================
 # STAGE 1: TERRAFORM PLAN
