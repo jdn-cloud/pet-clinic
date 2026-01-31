@@ -1,0 +1,46 @@
+trigger: none   # Never auto-trigger
+
+variables:
+  azureServiceConnection: 'azurerm-terraform-backend'
+  resourceGroup: 'rg-tfstate'
+  storageAccount: 'tfstate7a4c4iw4gbetk'
+  container: 'terraform-state'
+  tfStateKey: 'petclinic.tfstate'
+
+stages:
+- stage: Destroy
+  displayName: 'Terraform Destroy'
+  jobs:
+  - deployment: DestroyJob
+    displayName: 'DESTROY PetClinic Infrastructure'
+    environment: 'production'   # 🔒 Manual approval REQUIRED
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              backendServiceArm: '$(azureServiceConnection)'
+              backendAzureRmResourceGroupName: '$(resourceGroup)'
+              backendAzureRmStorageAccountName: '$(storageAccount)'
+              backendAzureRmContainerName: '$(container)'
+              backendAzureRmKey: '$(tfStateKey)'
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Destroy'
+            inputs:
+              provider: 'azurerm'
+              command: 'destroy'
+              environmentServiceNameAzureRM: '$(azureServiceConnection)'
