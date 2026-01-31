@@ -1,11 +1,17 @@
 trigger: none   # Never auto-trigger
 
 variables:
-  azureServiceConnection: 'azurerm-terraform-backend'
-  resourceGroup: 'rg-tfstate'
-  storageAccount: 'tfstate7a4c4iw4gbetk'
-  container: 'terraform-state'
-  tfStateKey: 'petclinic.tfstate'
+- name: azureServiceConnection
+  value: azurerm-terraform-backend
+- name: resourceGroup
+  value: rg-tfstate
+- name: storageAccount
+  value: tfstate7a4c4iw4gbetk
+- name: container
+  value: terraform-state
+- name: tfStateKey
+  value: petclinic.tfstate
+- group: terraform-prod-vars    
 
 stages:
 - stage: Destroy
