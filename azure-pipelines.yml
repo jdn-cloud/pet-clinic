@@ -85,6 +85,13 @@ stages:
               artifactName: terraform-plan
               targetPath: $(System.DefaultWorkingDirectory)
 
+          - task: Bash@3
+            displayName: Fix Provider Permissions
+            inputs:
+              targetType: inline
+              script: |
+                chmod -R +x .terraform/providers/ 2>/dev/null || true
+
           - task: TerraformInstaller@0
             displayName: Install Terraform
             inputs:
