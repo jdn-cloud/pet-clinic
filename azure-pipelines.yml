@@ -1,0 +1,84 @@
+trigger:
+- main
+
+pool:
+  name: 'Default'
+
+variables:
+  azureServiceConnection: 'azurerm-terraform-backend'
+  resourceGroup: 'rg-tfstate'
+  storageAccount: 'tfstate7a4c4iw4gbetk'
+  container: 'terraform-state'
+  tfStateKey: 'petclinic.tfstate'
+
+stages:
+- stage: Plan
+  displayName: Terraform Plan
+  jobs:
+  - job: Plan
+    steps:
+    - task: TerraformInstaller@0
+      inputs:
+        terraformVersion: 'latest'
+
+    - task: TerraformTaskV4@4
+      displayName: Terraform Init
+      inputs:
+        provider: azurerm
+        command: init
+        backendServiceArm: $(azureServiceConnection)
+        backendAzureRmResourceGroupName: $(resourceGroup)
+        backendAzureRmStorageAccountName: $(storageAccount)
+        backendAzureRmContainerName: $(container)
+        backendAzureRmKey: $(tfStateKey)
+
+    - task: TerraformTaskV4@4
+      displayName: Terraform Plan
+      inputs:
+        provider: azurerm
+        command: plan
+        commandOptions: '-out=main.tfplan'
+        environmentServiceNameAzureRM: $(azureServiceConnection)
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        artifact: terraform-plan
+        targetPath: $(System.DefaultWorkingDirectory)
+
+- stage: Deploy
+  displayName: Terraform Apply
+  dependsOn: Plan
+  condition: succeeded()
+  jobs:
+  - deployment: Deploy
+    environment: production
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifactName: terraform-plan
+
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: 'latest'
+
+          - task: TerraformTaskV4@4
+            displayName: Terraform Init
+            inputs:
+              provider: azurerm
+              command: init
+              backendServiceArm: $(azureServiceConnection)
+              backendAzureRmResourceGroupName: $(resourceGroup)
+              backendAzureRmStorageAccountName: $(storageAccount)
+              backendAzureRmContainerName: $(container)
+              backendAzureRmKey: $(tfStateKey)
+
+          - task: TerraformTaskV4@4
+            displayName: Terraform Apply
+            inputs:
+              provider: azurerm
+              command: apply
+              commandOptions: 'main.tfplan'
+              environmentServiceNameAzureRM: $(azureServiceConnection)
