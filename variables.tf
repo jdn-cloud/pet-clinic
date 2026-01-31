@@ -8,9 +8,12 @@ variable "location" {
   default = "westus3"
 }
 
-variable "admin_password" {
-  description = "Administrator password"
-  type        = string
-  sensitive   = true
+variable "vnet_name" {
+  type    = string
+  default = "petclinic-vnet"
 }
 
+variable "admin_password" {
+  type      = string
+  sensitive = true
+}
