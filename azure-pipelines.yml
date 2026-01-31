@@ -19,7 +19,7 @@ stages:
   - job: Plan
     displayName: 'Terraform Plan Job'
     pool:
-      vmImage: 'ubuntu-latest'
+      vmImage: 'windows-latest'
     steps:
     - checkout: self
 
