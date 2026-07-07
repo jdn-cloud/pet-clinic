@@ -10,7 +10,7 @@ resource "azurerm_resource_group" "rg" {
 # RANDOM SUFFIX (ARM uniqueString equivalent)
 ############################################
 resource "random_string" "suffix" {
-  length  = 6
+  length  = 9
   special = false
   upper   = false
 }
